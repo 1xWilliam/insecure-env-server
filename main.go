@@ -29,6 +29,8 @@ func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = defaultPort
+	} else {
+		port = ":" + port
 	}
 
 	mux := http.NewServeMux()
