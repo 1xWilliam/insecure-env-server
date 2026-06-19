@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -26,17 +29,28 @@ func main() {
 		Level: slog.LevelInfo,
 	}))
 
+	isProxied := false
+	if os.Getenv("IS_PROXIED") == "true" {
+		isProxied = true
+	}
+
+	allowedIPs := []string{"127.0.0.1"}
+	if os.Getenv("ALLOWED_IPS") != "" {
+		ips := strings.Split(os.Getenv("ALLOWED_IPS"), ",")
+		allowedIPs = append(allowedIPs, ips...)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/{env}", getENV(logger, isProxied, allowedIPs))
+
+	handler := recoverMiddleware(logger, mux)
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = defaultPort
 	} else {
 		port = ":" + port
 	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/{env}", getENV(logger))
-
-	handler := recoverMiddleware(logger, mux)
 
 	srv := &http.Server{
 		Addr:              port,
@@ -80,16 +94,33 @@ func main() {
 	}
 }
 
-func getENV(logger *slog.Logger) http.HandlerFunc {
+func getENV(logger *slog.Logger, isProxied bool, allowedIPs []string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ip := ""
+		if isProxied {
+			ip = r.Header.Get("X-Real-IP")
+		} else {
+			ip, _, _ = net.SplitHostPort(r.RemoteAddr)
+		}
+
+		if !slices.Contains(allowedIPs, ip) {
+			logger.Info("request",
+				"remote_addr", ip,
+				"status", http.StatusForbidden,
+				"method", r.Method,
+				"path", r.PathValue("env"),
+			)
+			http.Error(w, "403 forbidden", http.StatusForbidden)
+			return
+		}
+
 		if r.Method != http.MethodGet {
 			logger.Info("request",
-				"remote_addr", r.RemoteAddr,
+				"remote_addr", ip,
 				"status", http.StatusMethodNotAllowed,
 				"method", r.Method,
 				"path", r.PathValue("env"),
 			)
-			w.Header().Set("Allow", http.MethodGet)
 			http.Error(w, "405 method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
@@ -97,7 +128,7 @@ func getENV(logger *slog.Logger) http.HandlerFunc {
 		env, exists := os.LookupEnv(r.PathValue("env"))
 		if exists == false {
 			logger.Info("request",
-				"remote_addr", r.RemoteAddr,
+				"remote_addr", ip,
 				"status", http.StatusNotFound,
 				"path", r.PathValue("env"),
 			)
@@ -106,7 +137,7 @@ func getENV(logger *slog.Logger) http.HandlerFunc {
 		}
 
 		logger.Info("request",
-			"remote_addr", r.RemoteAddr,
+			"remote_addr", ip,
 			"status", http.StatusOK,
 			"path", r.PathValue("env"),
 		)
