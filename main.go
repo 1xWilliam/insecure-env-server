@@ -86,7 +86,7 @@ func main() {
 		defer cancel()
 
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			logger.Error("graceful shutdown failed, forcing close", "error", err)
+			logger.Error("graceful shutdown failed, forcing shutdown", "error", err)
 			_ = srv.Close()
 			os.Exit(1)
 		}
